@@ -2,10 +2,22 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdint.h>
+
+#ifdef __APPLE__
+#include <sys/types.h>
+#endif
+
+#ifdef _WIN32
+typedef long long ssize_t;
+#endif
 
 #define COLUMN_USERNAME_SIZE 32
 #define COLUMN_EMAIL_SIZE 255
 #define TABLE_MAX_PAGES 100
+
+
+
 
 #define size_of_attribute(Struct, Attribute) sizeof(((Struct*)0) -> Attribute)
 
@@ -48,20 +60,20 @@ typedef struct{
     Row row_to_insert;
 } Statement;
 
-const uint32_t ID_SIZE = size_of_attribute(Row, id);
-const uint32_t EMAIL_SIZE = size_of_attribute(Row, email);
-const uint32_t USERNAME_SIZE = size_of_attribute(Row, username);
-const uint32_t ID_OFFSET = 0;
-const uint32_t USERNAME_OFFSET = ID_OFFSET + ID_SIZE;
-const uint32_t EMAIL_OFFSET = USERNAME_OFFSET + USERNAME_SIZE;
-const uint32_t ROW_SIZE = EMAIL_SIZE + USERNAME_SIZE + ID_SIZE;
+#define ID_SIZE        size_of_attribute(Row, id)
+#define USERNAME_SIZE  size_of_attribute(Row, username)
+#define EMAIL_SIZE     size_of_attribute(Row, email)
+#define ID_OFFSET      0
+#define USERNAME_OFFSET (ID_OFFSET + ID_SIZE)
+#define EMAIL_OFFSET    (USERNAME_OFFSET + USERNAME_SIZE)
 
-const uint32_t PAGE_SIZE = 4092;
-const uint32_t ROWS_PER_PAGE = PAGE_SIZE / ROW_SIZE;
-const uint32_t TABLE_MAX_ROWS = TABLE_MAX_PAGES * ROWS_PER_PAGE;
+#define PAGE_SIZE 4096
+#define ROW_SIZE        (ID_SIZE + USERNAME_SIZE + EMAIL_SIZE)
+#define ROWS_PER_PAGE   (PAGE_SIZE / ROW_SIZE)
+#define TABLE_MAX_ROWS  (TABLE_MAX_PAGES * ROWS_PER_PAGE)
 
 typedef struct{
-    u_int32_t number_of_rows;
+    uint32_t number_of_rows;
     void* pages[TABLE_MAX_PAGES];
 } Table;
 
@@ -141,7 +153,20 @@ PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement)
     return PREPARE_UNRECOGNIZED_STATEMENT;
 }
 
-ssize_t getline(char **line, size_t *n, FILE *stream);
+#ifdef _WIN32
+ssize_t getline(char **lineptr, size_t *n, FILE *stream) {
+    if (!*lineptr) { *n = 128; *lineptr = malloc(*n); }
+    int c; size_t len = 0;
+    while ((c = fgetc(stream)) != EOF) {
+        if (len + 1 >= *n) { *n *= 2; *lineptr = realloc(*lineptr, *n); }
+        (*lineptr)[len++] = c;
+        if (c == '\n') break;
+    }
+    if (len == 0) return -1;
+    (*lineptr)[len] = '\0';
+    return len;
+}
+#endif
 
 void execute_statement(Statement *statement){
     switch(statement->type){
@@ -170,26 +195,26 @@ void read_input(InputBuffer *input_buffer){
 }
 
 void serialize_row(Row* source, void* destination){
-    memcpy(destination + ID_OFFSET, &(source->id), ID_SIZE);
-    memcpy(destination + USERNAME_OFFSET, &(source->username), USERNAME_SIZE);
-    memcpy(destination + EMAIL_OFFSET, &(source->email), EMAIL_SIZE);
+    memcpy((char*)destination + ID_OFFSET, &(source->id), ID_SIZE);
+    memcpy((char*)destination + USERNAME_OFFSET, &(source->username), USERNAME_SIZE);
+    memcpy((char*)destination + EMAIL_OFFSET, &(source->email), EMAIL_SIZE);
 }
 
 void deserialize_row(void* source, Row* destination){
-    memcpy(&(destination->id), source + ID_OFFSET, ID_SIZE);
-    memcpy(&(destination->username), source + USERNAME_OFFSET, USERNAME_SIZE);
-    memcpy(&(destination->email), source + EMAIL_OFFSET, EMAIL_SIZE);
+    memcpy(&(destination->id), (char*)source + ID_OFFSET, ID_SIZE);
+    memcpy(&(destination->username), (char*)source + USERNAME_OFFSET, USERNAME_SIZE);
+    memcpy(&(destination->email), (char*)source + EMAIL_OFFSET, EMAIL_SIZE);
 }
 
 void* row_slot(Table* table, uint32_t row_num){
-    uint32_t page_num = row_num / ROWS_PER_PAGE; 20 / 14
+    uint32_t page_num = row_num / ROWS_PER_PAGE; 
     void* page = table->pages[page_num];
     if(page == NULL){
         page = table->pages[page_num] = malloc(PAGE_SIZE);
     }
     uint32_t row_offset = row_num % ROWS_PER_PAGE;
     uint32_t byte_offset = row_offset * ROW_SIZE;
-    return page + byte_offset;
+    return (char*)page + byte_offset;
 }
 
 ExecuteResult execute_insert(Statement* statement, Table* table){
@@ -210,7 +235,7 @@ ExecuteResult execute_select(Statement* statement, Table* table){
         return EXECUTE_TABLE_EMPTY;
     }
     Row row;
-    for(u_int32_t i = 0; i < table->number_of_rows;i++){
+    for(uint32_t i = 0; i < table->number_of_rows;i++){
         deserialize_row(row_slot(table, i), &row);
         print_row(&row);
     }
